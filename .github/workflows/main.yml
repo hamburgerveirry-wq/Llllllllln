@@ -102,12 +102,14 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
+          import textwrap
 
           bridge = Path('native/src/bridge.cpp')
           source = bridge.read_text()
-          pattern = r'static bool own_memory\\(ggml_backend_dev_t dev\\) \\{.*?\\n\\}'
-          replacement = '''static bool own_memory(ggml_backend_dev_t dev) {
+          a = source.index('static bool own_memory(ggml_backend_dev_t dev) {')
+          b = source.index('\\n}', a) + 2
+          source = source[:a] + textwrap.dedent('''\
+          static bool own_memory(ggml_backend_dev_t dev) {
           #if defined(__APPLE__) || defined(__ANDROID__)
               // Android GPUs share system RAM; do not count Mali/Dimensity memory
               // as separate VRAM when estimating safe model placement.
@@ -115,13 +117,15 @@ jobs:
           #else
               return dev && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU;
           #endif
-          }'''
-          source, count = re.subn(pattern, lambda _: replacement, source, count=1, flags=re.S)
-          if count != 1:
-              raise SystemExit('Could not safely replace own_memory()')
+          }''') + source[b:]
 
-          needle = 'const bool explicit_backend = requested != "auto"\\n                    && lower.find(requested) != std::string::npos;'
-          replacement = '''const std::string description = ggml_backend_dev_description(dev);
+          token = 'const bool explicit_backend = requested != "auto"'
+          idx = source.index(token)
+          line_start = source.rfind('\\n', 0, idx) + 1
+          indent = source[line_start:idx]
+          if 'unsafe_mali_vulkan' not in source:
+              block = textwrap.indent(textwrap.dedent('''\
+          const std::string description = ggml_backend_dev_description(dev);
           std::string lower_description = description;
           std::transform(lower_description.begin(), lower_description.end(),
               lower_description.begin(), ::tolower);
@@ -139,11 +143,8 @@ jobs:
                   "Vulkan is temporarily blocked on Mali/Immortalis to protect device stability. Select Auto or CPU.");
           }
           #endif
-          const bool explicit_backend = requested != "auto"
-              && lower.find(requested) != std::string::npos;'''
-          if needle not in source:
-              raise SystemExit('Could not locate backend selection point for Mali safety guard')
-          source = source.replace(needle, replacement, 1)
+          '''), indent)
+              source = source[:line_start] + block + source[line_start:]
           bridge.write_text(source)
 
           page = Path('lib/features/hosting/presentation/device_hosting_page.dart')
@@ -151,38 +152,36 @@ jobs:
           import_line = "import '../../../core/l10n/l10n.dart';"
           shared_import = "import '../../../core/providers/shared_providers.dart';"
           if shared_import not in source:
-              if import_line not in source:
-                  raise SystemExit('Could not locate hosting page imports')
               source = source.replace(import_line, import_line + '\\n' + shared_import, 1)
 
-          state_pattern = r'final state = ref\\.watch\\(deviceHostingProvider\\);\\s*final model = ref\\.watch\\(modelManagerProvider\\)\\.loadedModel;\\s*final controller = ref\\.read\\(deviceHostingProvider\\.notifier\\);'
-          state_replacement = '''final state = ref.watch(deviceHostingProvider);
+          first = source.index('    final state = ref.watch(deviceHostingProvider);')
+          last_line = '    final controller = ref.read(deviceHostingProvider.notifier);'
+          last = source.index(last_line, first) + len(last_line)
+          state_block = '''    final state = ref.watch(deviceHostingProvider);
           final manager = ref.watch(modelManagerProvider);
           final model = manager.loadedModel;
           final engine = ref.read(llamaEngineProvider);
           final canStart = model != null && engine.isLoaded && !manager.isLoadingModel;
           final controller = ref.read(deviceHostingProvider.notifier);'''
-          source, count = re.subn(state_pattern, lambda _: state_replacement, source, count=1)
-          if count != 1 and 'final canStart = model != null && engine.isLoaded' not in source:
-              raise SystemExit('Could not patch API readiness state')
+          source = source[:first] + state_block + source[last:]
 
-          button_old = '''                                : model == null
+          old_button = '''                                : model == null
                                     ? null
                                     : () =>
                                           controller.start(port: _defaultPort),'''
-          button_new = '''                                : !canStart
+          new_button = '''                                : !canStart
                                     ? null
                                     : () =>
                                           controller.start(port: _defaultPort),'''
-          if button_old in source:
-              source = source.replace(button_old, button_new, 1)
-          elif button_new not in source:
-              raise SystemExit('Could not patch API Start button gating')
+          if old_button in source:
+              source = source.replace(old_button, new_button, 1)
+          elif new_button not in source:
+              raise SystemExit('API Start button pattern was not found')
 
-          note_old = """                    const SizedBox(height: AppDesign.sm),
+          old_note = """                    const SizedBox(height: AppDesign.sm),
                     Text(
                       'Uses the currently loaded model. The server is limited to your local network; it is not exposed as a public internet API.',"""
-          note_new = """                    if (!state.running && !state.starting) ...[
+          new_note = """                    if (!state.running && !state.starting) ...[
                       const SizedBox(height: AppDesign.sm),
                       Text(
                         model == null
@@ -198,12 +197,12 @@ jobs:
                     const SizedBox(height: AppDesign.sm),
                     Text(
                       'Uses the currently loaded model. The server is limited to your local network; it is not exposed as a public internet API.',"""
-          if note_old in source:
-              source = source.replace(note_old, note_new, 1)
-          elif note_new not in source:
-              raise SystemExit('Could not add API readiness explanation')
+          if old_note in source:
+              source = source.replace(old_note, new_note, 1)
+          elif new_note not in source:
+              raise SystemExit('API readiness hint insertion point was not found')
           page.write_text(source)
-          print('Applied Mali RAM accounting, Mali Vulkan safety block, and API readiness gating.')
+          print('Applied Android UMA accounting, Mali Vulkan safety block, and API readiness gating.')
           PY
       - name: Diagnose model loading and API server gating
         working-directory: project
