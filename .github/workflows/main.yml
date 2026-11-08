@@ -95,6 +95,47 @@ jobs:
           print('Patched API-key callback and SVG renderer/nullability compile blockers.')
           PY
 
+      - name: Diagnose model loading and API server gating
+        working-directory: project
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          patterns = re.compile(r'nGpuLayers|gpuLayers|gpu_layers|vulkan|Vulkan|isModelLoaded|modelLoaded|isLoading|loadModel|startServer|canStart|serverStatus|isServerRunning|enabled\s*:', re.I)
+          roots = [Path('lib'), Path('android/app/src/main')]
+          hits = 0
+          for root in roots:
+              if not root.exists():
+                  continue
+              for path in sorted(root.rglob('*')):
+                  if not path.is_file() or path.suffix not in ('.dart', '.kt', '.java', '.cpp', '.h', '.hpp'):
+                      continue
+                  try:
+                      lines = path.read_text(errors='replace').splitlines()
+                  except Exception:
+                      continue
+                  matched = [(i, line) for i, line in enumerate(lines) if patterns.search(line)]
+                  if not matched:
+                      continue
+                  print(f'\n===== {path} ({len(matched)} matching lines) =====')
+                  for i, line in matched:
+                      print(f'{i+1}: {line[:240]}')
+                      hits += 1
+                      if hits >= 180:
+                          break
+                  if hits >= 180:
+                      break
+              if hits >= 180:
+                  break
+          print(f'\nTOTAL MATCHING SOURCE LINES PRINTED: {hits}')
+          print('\n===== DEVICE HOSTING PAGE (first 260 lines) =====')
+          p = Path('lib/features/hosting/presentation/device_hosting_page.dart')
+          if p.exists():
+              for i, line in enumerate(p.read_text(errors='replace').splitlines()[:260], 1):
+                  print(f'{i}: {line[:240]}')
+          PY
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -119,29 +160,22 @@ jobs:
         run: |
           set -euo pipefail
           apk="project/build/app/outputs/flutter-apk/app-release.apk"
-
           test -s "$apk"
           echo "APK size:"
           stat -c '%s bytes' "$apk"
-
           echo "Checking ZIP integrity and CRC..."
           unzip -tq "$apk"
-
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
           test -n "$sdk_root"
-
           build_tools="$(
             find "$sdk_root/build-tools" -mindepth 1 -maxdepth 1 -type d |
             sort -V | tail -n 1
           )"
           test -n "$build_tools"
-
           echo "Checking APK alignment..."
           "$build_tools/zipalign" -c -v 4 "$apk"
-
           echo "Checking APK signature..."
           "$build_tools/apksigner" verify --verbose --print-certs "$apk"
-
           sha256sum "$apk" > "$apk.sha256"
           echo "All APK checks passed."
 
