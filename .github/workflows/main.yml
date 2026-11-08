@@ -25,6 +25,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Restore uploaded source archive from previous commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin bd14f0e828a1db61b3558df669926c2eaa987a3b
+          git show bd14f0e828a1db61b3558df669926c2eaa987a3b:on-device-llm-1.3.7-api-one-button-fast-replies-source.zip > on-device-llm-1.3.7-api-one-button-fast-replies-source.zip
+          test -s on-device-llm-1.3.7-api-one-button-fast-replies-source.zip
+
       - name: Extract Flutter project ZIP
         shell: bash
         run: |
