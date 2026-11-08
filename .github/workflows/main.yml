@@ -3,8 +3,7 @@ name: Build Android APK
 on:
   push:
     paths:
-      - 'on-device-llm-1.3.0-android-agent-isolated-v3.zip'
-      - '.github/workflows/main.yml'
+      - 'on-device-llm-1.3.7-persistent-memory-dev-flat.zip'
   workflow_dispatch:
 
 permissions:
@@ -29,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive='on-device-llm-1.3.0-android-agent-isolated-v3.zip'
+          archive='on-device-llm-1.3.7-persistent-memory-dev-flat.zip'
           test -f "$archive" || { echo "Missing project archive: $archive"; exit 1; }
           mkdir -p project
           unzip -q "$archive" -d project
@@ -86,23 +85,6 @@ jobs:
 
           sha256sum "$apk" > "$apk.sha256"
           echo "All APK checks passed."
-
-      - name: Publish direct APK download
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          apk="project/build/app/outputs/flutter-apk/app-release.apk"
-          tag="android-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-
-          gh release create "$tag" \
-            "$apk#on-device-llm-arm64-release.apk" \
-            "$apk.sha256#on-device-llm-arm64-release.apk.sha256" \
-            --title "Android ARM64 APK build ${GITHUB_RUN_NUMBER}" \
-            --notes "APK validation passed. Source commit: ${GITHUB_SHA}" \
-            --target "${GITHUB_SHA}" \
-            --prerelease
 
       - name: Upload Android APK backup
         uses: actions/upload-artifact@v4
