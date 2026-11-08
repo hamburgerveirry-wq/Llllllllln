@@ -1,7 +1,33 @@
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -6973,6 +6973,19 @@ static vk_device ggml_vk_get_device(size_t idx) {
+@@ -1045,7 +1045,14 @@ std::unique_ptr<vk_queue> ggml_vk_create_queue(vk_device& device, uint32_t queue_family_index, uint32_t queue_index, vk::PipelineStageFlags&& stage_flags, bool transfer_only) {
+     }
+ 
+     h->queue = device->device.getQueue2(queue_info2);
++    // Some Android Mali ICDs have returned a null queue for getQueue2. If the
++    // optional internally-synchronized mode is not enabled, retry the Vulkan 1.0
++    // queue getter; otherwise fail device initialization rather than dereference null.
++    if (!h->queue && !device->has_internally_synchronized_queues) {
++        h->queue = device->device.getQueue(queue_family_index, queue_index);
++    }
++    if (!h->queue) {
++        throw std::runtime_error("Vulkan returned a null queue; rejecting this device.");
++    }
+     h->device = device;
+     // Avoid concurrent submissions on NVIDIA due to driver bug.
+     if (device->vendor_id == VK_VENDOR_ID_NVIDIA) {
+@@ -4501,7 +4508,9 @@ static vk_device ggml_vk_get_device(size_t idx) {
+         device->device_fault = device->device_fault && fault_features.deviceFault;
+ 
+-        device->has_internally_synchronized_queues = internally_synchronized_queues_features.internallySynchronizedQueues;
++        // Keep the normal host-locked queue path on ARM Mali drivers; the optional
++        // driver-side synchronized queue path has a reported QueueSubmit failure.
++        device->has_internally_synchronized_queues =
++            internally_synchronized_queues_features.internallySynchronizedQueues && device->vendor_id != VK_VENDOR_ID_ARM;
+ 
+         // Build queue create infos only after querying whether internally synchronized queues are enabled.
+@@ -6973,6 +6982,19 @@ static vk_device ggml_vk_get_device(size_t idx) {
          device->buffer_device_address = vk12_features.bufferDeviceAddress;
          device->vulkan_memory_model = vk12_features.vulkanMemoryModel;
  
@@ -19,9 +45,9 @@ diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vu
 +        }
 +
          if (device->subgroup_size_control) {
-             device->subgroup_min_size = subgroup_size_control_props.subgroupMinSize;
-             device->subgroup_max_size = subgroup_size_control_props.subgroupMaxSize;
-@@ -7099,7 +7112,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
+             device->subgroup_min_size = subgroup_size_control_props.subgroup_min_size;
+             device->subgroup_max_size = subgroup_size_control_props.subgroup_max_size;
+@@ -7099,7 +7121,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
              throw std::runtime_error("Unsupported device");
          }
  
@@ -33,7 +59,7 @@ diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vu
  
  #ifdef GGML_VULKAN_VALIDATE
          device_extensions.push_back("VK_KHR_shader_non_semantic_info");
-@@ -7223,6 +7239,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
+@@ -7223,6 +7248,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
          device_create_info.setPNext(&device_features2);
          device->device = device->physical_device.createDevice(device_create_info);
  
@@ -43,22 +69,3 @@ diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vu
          if (device->device_fault) {
              device->pfn_vkGetDeviceFaultInfoEXT = (PFN_vkGetDeviceFaultInfoEXT)
                  vkGetDeviceProcAddr(device->device, "vkGetDeviceFaultInfoEXT");
-@@ -338868,7 +338868,8 @@ static vk_device ggml_vk_get_device(size_t idx) {
--        device->has_internally_synchronized_queues = internally_synchronized_queues_features.internallySynchronizedQueues;
-+        // Mali drivers have reported failures in queue submission when this optional
-+        // driver-side synchronization path is enabled. Keep the normal host-locked queue path.
-+        device->has_internally_synchronized_queues =
-+            internally_synchronized_queues_features.internallySynchronizedQueues && device->vendor_id != VK_VENDOR_ID_ARM;
-@@ -1048,7 +1049,14 @@ std::unique_ptr<vk_queue> ggml_vk_create_queue(vk_device& device, uint32_t queue_family_index, uint32_t queue_index, vk::PipelineStageFlags&& stage_flags, bool transfer_only) {
--    h->queue = device->device.getQueue2(queue_info2);
-+    h->queue = device->device.getQueue2(queue_info2);
-+    // Some Android Mali ICDs have returned a null queue for getQueue2. If the
-+    // optional internally-synchronized mode is not enabled, retry the Vulkan 1.0
-+    // queue getter; otherwise fail device initialization rather than dereference null.
-+    if (!h->queue && !device->has_internally_synchronized_queues) {
-+        h->queue = device->device.getQueue(queue_family_index, queue_index);
-+    }
-+    if (!h->queue) {
-+        throw std::runtime_error("Vulkan returned a null queue; rejecting this device.");
-+    }
-     h->device = device;
