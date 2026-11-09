@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'on-device-llm-1.3.7-api-one-button-fast-replies-source.zip'
+      - 'scripts/apply_mali_safety.py'
       - '.github/workflows/main.yml'
   workflow_dispatch:
 
