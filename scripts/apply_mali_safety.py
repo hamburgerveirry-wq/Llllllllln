@@ -46,6 +46,43 @@ if "unsafe_mali_vulkan" not in source:
     source = source[:line_start] + block + source[line_start:]
 bridge.write_text(source)
 
+# Battery percentage must never prevent API hosting. Keep the severe-heat guard.
+provider = Path("project/lib/features/hosting/presentation/device_hosting_provider.dart")
+source = provider.read_text()
+old_guard = "const HostingGuards({this.minBattery = 20, this.maxThermal = 3});"
+new_guard = "const HostingGuards({this.minBattery, this.maxThermal = 3});"
+if old_guard in source:
+    source = source.replace(old_guard, new_guard, 1)
+elif new_guard not in source:
+    raise SystemExit("Could not locate the default API hosting battery guard")
+provider.write_text(source)
+
+test = Path("project/test/device_model_server_test.dart")
+if test.exists():
+    source = test.read_text()
+    needle = "    const guards = HostingGuards(minBattery: 20);"
+    assertion = """    const defaultGuards = HostingGuards();
+    expect(
+      DeviceHostingNotifier.stopReason(
+        const DevicePower(level: 5, charging: false),
+        defaultGuards,
+      ),
+      isNull,
+      reason: 'low battery must not stop API hosting by default',
+    );
+    expect(
+      DeviceHostingNotifier.stopReason(
+        const DevicePower(level: 90, thermalStatus: 3),
+        defaultGuards,
+      ),
+      contains('too hot'),
+      reason: 'severe thermal protection must remain enabled',
+    );
+    const guards = HostingGuards(minBattery: 20);"""
+    if needle in source and "low battery must not stop API hosting by default" not in source:
+        source = source.replace(needle, assertion, 1)
+    test.write_text(source)
+
 page = Path("project/lib/features/hosting/presentation/device_hosting_page.dart")
 source = page.read_text()
 import_line = "import '../../../core/l10n/l10n.dart';"
