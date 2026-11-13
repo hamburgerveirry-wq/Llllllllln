@@ -1,11 +1,15 @@
 name: Build Android APK
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/main.yml"
   workflow_dispatch:
     inputs:
       source_archive_url:
         description: "HTTPS download URL for the exact ODLLM source ZIP to build"
-        required: true
+        required: false
         type: string
 
 permissions:
@@ -29,7 +33,7 @@ jobs:
       - name: Download and validate selected source archive
         shell: bash
         env:
-          SOURCE_ARCHIVE_URL: ${{ inputs.source_archive_url }}
+          SOURCE_ARCHIVE_URL: ${{ inputs.source_archive_url || 'https://uc76c9db8fc63d5cca66ec1ea2c0.dl.dropboxusercontent.com/cd/0/get/DL2irdF7Kaa-3nGditp4gGnnvajWykg5bW11ubvzjo7cilTKJAgsZF_NdhKsmhi2g-Q-Va-t0UDLcpqsggraFL9dyBJyhD9pnIHigIjxMTCYEQT22Hp4wCPmSE82hd-2FKiCWHUeICbSIy39mluI_PZ3_WU3oJWHc68D_ul--DxpOw/file?c_luid=513f50f9' }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -48,7 +52,7 @@ jobs:
           unzip -q source.zip -d project
           if [ ! -f project/pubspec.yaml ]; then
             roots="$(find project -mindepth 2 -maxdepth 3 -name pubspec.yaml -print)"
-            if [ "$(printf '%s\n' "$roots" | sed '/^$/d' | wc -l)" -ne 1 ]; then
+            if [ "$(printf '%s\\n' "$roots" | sed '/^$/d' | wc -l)" -ne 1 ]; then
               echo "Could not identify one Flutter project root in the archive."
               exit 1
             fi
