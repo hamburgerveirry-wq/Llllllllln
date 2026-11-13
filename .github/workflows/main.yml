@@ -1,14 +1,15 @@
 name: Build Android APK
 
 on:
-  push:
-    paths:
-      - 'on-device-llm-1.3.7-api-one-button-fast-replies-source.zip'
-      - '.github/workflows/main.yml'
   workflow_dispatch:
+    inputs:
+      source_archive_url:
+        description: "HTTPS download URL for the exact ODLLM source ZIP to build"
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: android-apk-${{ github.ref }}
@@ -16,136 +17,60 @@ concurrency:
 
 jobs:
   android:
-    name: Extract project and build ARM64 APK
+    name: Build and verify Android release APK
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Check out repository containing the ZIP
+      - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Restore uploaded source archive from previous commit
+      - name: Download and validate selected source archive
         shell: bash
+        env:
+          SOURCE_ARCHIVE_URL: ${{ inputs.source_archive_url }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin bd14f0e828a1db61b3558df669926c2eaa987a3b
-          git show bd14f0e828a1db61b3558df669926c2eaa987a3b:on-device-llm-1.3.7-api-one-button-fast-replies-source.zip > on-device-llm-1.3.7-api-one-button-fast-replies-source.zip
-          test -s on-device-llm-1.3.7-api-one-button-fast-replies-source.zip
-
-      - name: Extract Flutter project ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive='on-device-llm-1.3.7-api-one-button-fast-replies-source.zip'
-          test -f "$archive" || { echo "Missing project archive: $archive"; exit 1; }
+          python3 - <<'PY'
+          import os
+          from urllib.parse import urlparse
+          url = os.environ["SOURCE_ARCHIVE_URL"].strip()
+          parsed = urlparse(url)
+          if parsed.scheme != "https" or not parsed.netloc:
+              raise SystemExit("Source archive URL must be a valid HTTPS URL.")
+          PY
+          curl --fail --location --silent --show-error --retry 3 \
+            "$SOURCE_ARCHIVE_URL" -o source.zip
+          test -s source.zip
+          unzip -tq source.zip
           mkdir -p project
-          unzip -q "$archive" -d project
-          test -f project/pubspec.yaml || { echo 'pubspec.yaml was not found at the extracted project root.'; exit 1; }
-          test -f project/scripts/build_android.sh || { echo 'scripts/build_android.sh is missing.'; exit 1; }
-          echo 'Project archive extracted successfully.'
-
-      - name: Patch Dart compile blockers
-        working-directory: project
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          hosting = Path('lib/features/hosting/presentation/device_hosting_page.dart')
-          source = hosting.read_text()
-          if "onCopy: () => _copy('API key', token)," not in source:
-              needle = "trailing: Row("
-              if source.count(needle) != 1:
-                  raise SystemExit('Expected exactly one API-key trailing row')
-              source = source.replace(
-                  needle,
-                  "onCopy: () => _copy('API key', token),\n                trailing: Row(",
-                  1,
-              )
-          hosting.write_text(source)
-
-          svg_file = Path('lib/features/tools/svg_image_tool.dart')
-          source = svg_file.read_text()
-          source = source.replace(
-              "import 'package:flutter_svg/flutter_svg.dart' show SvgStringLoader;",
-              "import 'package:flutter_svg/flutter_svg.dart' as flutter_svg;",
-          )
-          source = source.replace(
-              "import 'package:vector_graphics/vector_graphics.dart' as vg;", ""
-          )
-          source = source.replace(
-              "vg.loadPicture(SvgStringLoader(svg), null)",
-              "flutter_svg.vg.loadPicture(flutter_svg.SvgStringLoader(svg), null)",
-          )
-          source = source.replace(
-              "image = await info.picture.toImage(width, height);",
-              "final rasterImage = await info.picture.toImage(width, height);\n      image = rasterImage;",
-          )
-          source = source.replace(
-              "image.toByteData(format: ui.ImageByteFormat.png)",
-              "rasterImage.toByteData(format: ui.ImageByteFormat.png)",
-          )
-          if "vg.loadPicture(SvgStringLoader(svg), null)" in source or "image.toByteData(format: ui.ImageByteFormat.png)" in source:
-              raise SystemExit('SVG compile blocker remains after patch')
-          if "flutter_svg.vg.loadPicture(flutter_svg.SvgStringLoader(svg), null)" not in source:
-              raise SystemExit('Could not safely patch SVG renderer API')
-          svg_file.write_text(source)
-          print('Patched API-key callback and SVG renderer/nullability compile blockers.')
-          PY
-
-      - name: Diagnose model loading and API server gating
-        working-directory: project
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          patterns = re.compile(r'nGpuLayers|gpuLayers|gpu_layers|vulkan|Vulkan|isModelLoaded|modelLoaded|isLoading|loadModel|startServer|canStart|serverStatus|isServerRunning|enabled\s*:', re.I)
-          roots = [Path('lib'), Path('android/app/src/main')]
-          hits = 0
-          for root in roots:
-              if not root.exists():
-                  continue
-              for path in sorted(root.rglob('*')):
-                  if not path.is_file() or path.suffix not in ('.dart', '.kt', '.java', '.cpp', '.h', '.hpp'):
-                      continue
-                  try:
-                      lines = path.read_text(errors='replace').splitlines()
-                  except Exception:
-                      continue
-                  matched = [(i, line) for i, line in enumerate(lines) if patterns.search(line)]
-                  if not matched:
-                      continue
-                  print(f'\n===== {path} ({len(matched)} matching lines) =====')
-                  for i, line in matched:
-                      print(f'{i+1}: {line[:240]}')
-                      hits += 1
-                      if hits >= 180:
-                          break
-                  if hits >= 180:
-                      break
-              if hits >= 180:
-                  break
-          print(f'\nTOTAL MATCHING SOURCE LINES PRINTED: {hits}')
-          print('\n===== DEVICE HOSTING PAGE (first 260 lines) =====')
-          p = Path('lib/features/hosting/presentation/device_hosting_page.dart')
-          if p.exists():
-              for i, line in enumerate(p.read_text(errors='replace').splitlines()[:260], 1):
-                  print(f'{i}: {line[:240]}')
-          PY
+          unzip -q source.zip -d project
+          if [ ! -f project/pubspec.yaml ]; then
+            roots="$(find project -mindepth 2 -maxdepth 3 -name pubspec.yaml -print)"
+            if [ "$(printf '%s\n' "$roots" | sed '/^$/d' | wc -l)" -ne 1 ]; then
+              echo "Could not identify one Flutter project root in the archive."
+              exit 1
+            fi
+            project_root="$(dirname "$roots")"
+            mv "$project_root" project-root
+            rm -rf project
+            mv project-root project
+          fi
+          test -f project/pubspec.yaml
+          test -f project/scripts/build_android.sh
+          echo "Source archive extracted and Flutter project root verified."
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.47.5'
+          flutter-version: "3.47.5"
           channel: stable
           cache: true
           cache-key: flutter-3.47.5-${{ runner.os }}
@@ -161,28 +86,20 @@ jobs:
           set -euo pipefail
           apk="project/build/app/outputs/flutter-apk/app-release.apk"
           test -s "$apk"
-          echo "APK size:"
-          stat -c '%s bytes' "$apk"
-          echo "Checking ZIP integrity and CRC..."
           unzip -tq "$apk"
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
           test -n "$sdk_root"
-          build_tools="$(
-            find "$sdk_root/build-tools" -mindepth 1 -maxdepth 1 -type d |
-            sort -V | tail -n 1
-          )"
+          build_tools="$(find "$sdk_root/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           test -n "$build_tools"
-          echo "Checking APK alignment..."
           "$build_tools/zipalign" -c -v 4 "$apk"
-          echo "Checking APK signature..."
           "$build_tools/apksigner" verify --verbose --print-certs "$apk"
           sha256sum "$apk" > "$apk.sha256"
-          echo "All APK checks passed."
+          echo "APK integrity, alignment, signature, and SHA-256 checks passed."
 
-      - name: Upload Android APK backup
+      - name: Upload Android APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: on-device-llm-android-arm64-release
+          name: on-device-llm-android-release
           path: |
             project/build/app/outputs/flutter-apk/app-release.apk
             project/build/app/outputs/flutter-apk/app-release.apk.sha256
