@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
     inputs:
       source_archive_url:
-        description: "HTTPS download URL for the exact ODLLM source ZIP to build"
-        required: false
+        description: "HTTPS download URL for the ODLLM source ZIP to build"
+        required: true
         type: string
 
 permissions:
@@ -33,7 +33,7 @@ jobs:
       - name: Download and validate selected source archive
         shell: bash
         env:
-          SOURCE_ARCHIVE_URL: ${{ inputs.source_archive_url || 'https://uc044e0f17796473684247e9198b.dl.dropboxusercontent.com/cd/0/get/DL3zUxnNlrFLXAPyXmef9-GhDKQLCShCrRl1pA9rEqfnHrs3Q8T0y_SwlcVuHAws2JSPeMSMQeHYsP5ev5RT3Y9qsXjkIGoc0uaexILtKUNFIBWvJ06v9Qw1a7VpJLvOHTS7UEUubMV-aDDbikzoIQyA-kLy2QnXGist98iY8u3Mew/file?c_luid=513f50f9' }}
+          SOURCE_ARCHIVE_URL: ${{ inputs.source_archive_url }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -65,6 +65,36 @@ jobs:
           test -f project/scripts/build_android.sh
           echo "Source archive extracted and Flutter project root verified."
 
+      - name: Apply explicit Vulkan no silent CPU fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=project/lib/inference/ffi/llama_bindings.dart
+          test -f "$f"
+          # When preferred backend is vulkan, only try the Vulkan .so — never fall through to CPU.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("project/lib/inference/ffi/llama_bindings.dart")
+          t = p.read_text()
+          old = """'vulkan' => const [
+        'libondevice_llm_vulkan.so',
+        'libondevice_llm_cpu_i8mm.so',
+        'libondevice_llm.so',
+      ],"""
+          new = """'vulkan' => const [
+        'libondevice_llm_vulkan.so',
+      ],"""
+          if old not in t:
+              if "'vulkan' => const [" in t and "libondevice_llm_vulkan.so" in t:
+                  print("Vulkan block already patched or different shape; continuing")
+              else:
+                  raise SystemExit("Could not locate vulkan order block to patch")
+          else:
+              t = t.replace(old, new, 1)
+              p.write_text(t)
+              print("Patched explicit vulkan: no CPU fallback")
+          PY
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -82,6 +112,9 @@ jobs:
       - name: Build release APK
         working-directory: project
         shell: bash
+        env:
+          ODLLM_VULKAN: "ON"
+          ODLLM_OPENCL: "ON"
         run: bash scripts/build_android.sh
 
       - name: Verify APK
@@ -98,6 +131,7 @@ jobs:
           "$build_tools/zipalign" -c -v 4 "$apk"
           "$build_tools/apksigner" verify --verbose --print-certs "$apk"
           sha256sum "$apk" > "$apk.sha256"
+          unzip -Z1 "$apk" | grep -E 'lib/arm64-v8a/libondevice_llm(_vulkan|_opencl|_cpu_i8mm)?\.so' || true
           echo "APK integrity, alignment, signature, and SHA-256 checks passed."
 
       - name: Upload Android APK artifact
