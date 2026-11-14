@@ -1,10 +1,6 @@
 name: Build Android APK
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/main.yml"
   workflow_dispatch:
     inputs:
       source_archive_url:
@@ -71,7 +67,6 @@ jobs:
           set -euo pipefail
           f=project/lib/inference/ffi/llama_bindings.dart
           test -f "$f"
-          # When preferred backend is vulkan, only try the Vulkan .so — never fall through to CPU.
           python3 - <<'PY'
           from pathlib import Path
           p = Path("project/lib/inference/ffi/llama_bindings.dart")
